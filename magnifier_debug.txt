@@ -1,0 +1,70 @@
+--- Window Position ---
+Monitor: 0,0 2560x1440
+Window display_size: 600
+Window target position: 980, 420
+Window target center: 1280, 720
+Window actual geometry: 980, 420, 600x600
+Window actual center: 1280, 720
+
+--- CaptureThread ---
+Monitor: 0,0 2560x1440
+Capture size: 300
+Capture region: {'left': 1130, 'top': 570, 'width': 300, 'height': 300}
+Capture center: 1280, 720
+Screen center: 1280, 720
+
+--- CaptureThread ---
+Monitor: 0,0 2560x1440
+Capture size: 300
+Capture region: {'left': 1130, 'top': 570, 'width': 300, 'height': 300}
+Capture center: 1280, 720
+Screen center: 1280, 720
+
+--- CaptureThread ---
+Monitor: 0,0 2560x1440
+Capture size: 300
+Capture region: {'left': 1130, 'top': 570, 'width': 300, 'height': 300}
+Capture center: 1280, 720
+Screen center: 1280, 720
+
+--- CaptureThread ---
+Monitor: 0,0 2560x1440
+Capture size: 300
+Capture region: {'left': 1130, 'top': 570, 'width': 300, 'height': 300}
+Capture center: 1280, 720
+Screen center: 1280, 720
+
+--- CaptureThread ---
+Monitor: 0,0 2560x1440
+Capture size: 300
+Capture region: {'left': 1130, 'top': 570, 'width': 300, 'height': 300}
+Capture center: 1280, 720
+Screen center: 1280, 720
+
+--- CaptureThread ---
+Monitor: 0,0 2560x1440
+Capture size: 300
+Capture region: {'left': 1130, 'top': 570, 'width': 300, 'height': 300}
+Capture center: 1280, 720
+Screen center: 1280, 720
+
+--- CaptureThread ---
+Monitor: 0,0 2560x1440
+Capture size: 300
+Capture region: {'left': 1130, 'top': 570, 'width': 300, 'height': 300}
+Capture center: 1280, 720
+Screen center: 1280, 720
+
+--- CaptureThread ---
+Monitor: 0,0 2560x1440
+Capture size: 300
+Capture region: {'left': 1130, 'top': 570, 'width': 300, 'height': 300}
+Capture center: 1280, 720
+Screen center: 1280, 720
+
+--- CaptureThread ---
+Monitor: 0,0 2560x1440
+Capture size: 300
+Capture region: {'left': 1130, 'top': 570, 'width': 300, 'height': 300}
+Capture center: 1280, 720
+Screen center: 1280, 720

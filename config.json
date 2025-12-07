@@ -4,7 +4,7 @@
     "magnifier": "-"
   },
   "crosshair": {
-    "type": "circle_dot",
+    "type": "dot",
     "r": 0,
     "g": 255,
     "b": 0,
@@ -15,14 +15,14 @@
     "dot_size": 4.12
   },
   "magnifier": {
-    "capture_size": 60,
-    "display_size": 243,
+    "capture_size": 300,
+    "display_size": 600,
     "target_fps": 70,
     "interpolation": "nearest",
-    "offset_x": 5,
-    "offset_y": 7,
+    "offset_x": 0,
+    "offset_y": 0,
     "border_color": "#00ff00",
     "border_width": 2,
-    "zoom": 4.0
+    "zoom": 2.0
   }
 }

@@ -8,6 +8,18 @@ import time
 import numpy as np
 import mss
 import cv2
+import ctypes
+
+# DPI awareness для корректных координат на Windows
+if sys.platform == 'win32':
+    try:
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)  # Per-monitor DPI aware
+    except Exception:
+        try:
+            ctypes.windll.user32.SetProcessDPIAware()
+        except Exception:
+            pass
+
 from PyQt5 import QtWidgets, QtCore, QtGui
 
 
@@ -56,18 +68,37 @@ class CaptureThread(QtCore.QThread):
             except IndexError:
                 mon = sct.monitors[1]
             
+            # Учитываем смещение монитора (для мультимониторных конфигураций)
+            mon_left = mon['left']
+            mon_top = mon['top']
             screen_width = mon['width']
             screen_height = mon['height']
-            center_x = screen_width // 2
-            center_y = screen_height // 2
+            
+            # Центр монитора — для чётных размеров экрана это между пикселями
+            # Захватываем так чтобы центр экрана был точно в центре захваченной области
             half = self.capture_size // 2
+            
+            # left = center - half, но center = width/2
+            # Для width=2560, center=1280, half=100: left=1180, right=1380 (200 px)
+            # Центр захвата = 1180 + 100 = 1280 ✓
+            capture_left = mon_left + (screen_width - self.capture_size) // 2
+            capture_top = mon_top + (screen_height - self.capture_size) // 2
 
             capture_region = {
-                'left': center_x - half,
-                'top': center_y - half,
+                'left': capture_left,
+                'top': capture_top,
                 'width': self.capture_size,
                 'height': self.capture_size
             }
+            
+            # Отладка в файл (дописываем)
+            with open('magnifier_debug.txt', 'a') as f:
+                f.write("\n--- CaptureThread ---\n")
+                f.write(f"Monitor: {mon_left},{mon_top} {screen_width}x{screen_height}\n")
+                f.write(f"Capture size: {self.capture_size}\n")
+                f.write(f"Capture region: {capture_region}\n")
+                f.write(f"Capture center: {capture_left + self.capture_size//2}, {capture_top + self.capture_size//2}\n")
+                f.write(f"Screen center: {mon_left + screen_width//2}, {mon_top + screen_height//2}\n")
             
             interp = self.INTERPOLATION_MODES.get(self.interpolation, cv2.INTER_LINEAR)
             
@@ -167,12 +198,40 @@ class MagnifierWindow(QtWidgets.QLabel):
         self._click_through_applied = False
 
     def _position_window(self):
-        """Позиционирует окно относительно центра экрана."""
-        screen = QtWidgets.QApplication.primaryScreen()
-        geometry = screen.availableGeometry()
-        x = geometry.center().x() - (self.display_size // 2) + self.offset_x
-        y = geometry.center().y() - (self.display_size // 2) + self.offset_y
-        self.move(x, y)
+        """Позиционирует окно относительно центра экрана (синхронизировано с mss)."""
+        import mss
+        
+        # Очищаем debug файл
+        with open('magnifier_debug.txt', 'w') as f:
+            f.write("--- Window Position ---\n")
+        
+        with mss.mss() as sct:
+            mag_config = self.config.get('magnifier', {})
+            monitor_index = mag_config.get('monitor_index', 1)
+            try:
+                mon = sct.monitors[monitor_index]
+            except IndexError:
+                mon = sct.monitors[1]
+            
+            # Позиционируем окно так чтобы его центр был ровно в центре экрана
+            screen_center_x = mon['left'] + mon['width'] // 2
+            screen_center_y = mon['top'] + mon['height'] // 2
+            x = screen_center_x - self.display_size // 2 + self.offset_x
+            y = screen_center_y - self.display_size // 2 + self.offset_y
+            
+            # Используем setGeometry для точного позиционирования
+            self.setGeometry(x, y, self.display_size, self.display_size)
+            
+            # Отладка
+            with open('magnifier_debug.txt', 'a') as f:
+                f.write(f"Monitor: {mon['left']},{mon['top']} {mon['width']}x{mon['height']}\n")
+                f.write(f"Window display_size: {self.display_size}\n")
+                f.write(f"Window target position: {x}, {y}\n")
+                f.write(f"Window target center: {x + self.display_size//2}, {y + self.display_size//2}\n")
+                # Реальная позиция после setGeometry
+                geom = self.geometry()
+                f.write(f"Window actual geometry: {geom.x()}, {geom.y()}, {geom.width()}x{geom.height()}\n")
+                f.write(f"Window actual center: {geom.x() + geom.width()//2}, {geom.y() + geom.height()//2}\n")
 
     def _set_click_through(self):
         """Делает окно прозрачным для кликов и исключает из захвата экрана (Windows)."""
@@ -255,8 +314,8 @@ class MagnifierWindow(QtWidgets.QLabel):
         """Обновляет изображение."""
         if not qimg.isNull():
             pix = QtGui.QPixmap.fromImage(qimg)
-            self.setPixmap(pix.scaled(self.display_size, self.display_size,
-                                       QtCore.Qt.KeepAspectRatio))
+            # Изображение уже нужного размера после cv2.resize, просто ставим
+            self.setPixmap(pix)
 
     @QtCore.pyqtSlot()
     def toggle(self):
