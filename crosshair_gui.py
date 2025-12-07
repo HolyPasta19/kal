@@ -226,7 +226,7 @@ class CrosshairApp:
         # Размер окна лупы
         ttk.Label(frame, text="Размер окна лупы (px):").grid(row=0, column=0, sticky='w', pady=5)
         self.display_size_var = tk.IntVar(value=mag_config.get('display_size', 300))
-        ttk.Scale(frame, from_=100, to=600, variable=self.display_size_var,
+        ttk.Scale(frame, from_=100, to=1000, variable=self.display_size_var,
                  command=lambda v: self.on_magnifier_change()).grid(row=0, column=1, sticky='ew', padx=5)
         self.display_size_label = ttk.Label(frame, text=str(self.display_size_var.get()))
         self.display_size_label.grid(row=0, column=2)
@@ -323,17 +323,18 @@ class CrosshairApp:
         
         def get_key_name(key):
             try:
+                if hasattr(key, 'vk') and key.vk:
+                    vk = key.vk
+                    if 65 <= vk <= 90: return chr(vk).lower()
+                    if 48 <= vk <= 57: return chr(vk)
+                    if 112 <= vk <= 123: return f'f{vk - 111}'
+                    if vk == 189: return '-'
+                    if vk == 187: return '='
+                    if vk in (220, 226): return '\\'
                 if hasattr(key, 'char') and key.char:
                     return key.char.lower()
                 if hasattr(key, 'name') and key.name:
                     return key.name.lower()
-                if hasattr(key, 'vk') and key.vk:
-                    if 65 <= key.vk <= 90:
-                        return chr(key.vk).lower()
-                    if 48 <= key.vk <= 57:
-                        return chr(key.vk)
-                    if 112 <= key.vk <= 123:
-                        return f'f{key.vk - 111}'
             except:
                 pass
             return None
@@ -568,17 +569,18 @@ class CrosshairApp:
         
         def get_key_name(key):
             try:
+                if hasattr(key, 'vk') and key.vk:
+                    vk = key.vk
+                    if 65 <= vk <= 90: return chr(vk).lower()
+                    if 48 <= vk <= 57: return chr(vk)
+                    if 112 <= vk <= 123: return f'f{vk - 111}'
+                    if vk == 189: return '-'
+                    if vk == 187: return '='
+                    if vk in (220, 226): return '\\'
                 if hasattr(key, 'char') and key.char:
                     return key.char.lower()
                 if hasattr(key, 'name') and key.name:
                     return key.name.lower()
-                if hasattr(key, 'vk') and key.vk:
-                    if 65 <= key.vk <= 90:
-                        return chr(key.vk).lower()
-                    if 48 <= key.vk <= 57:
-                        return chr(key.vk)
-                    if 112 <= key.vk <= 123:
-                        return f'f{key.vk - 111}'
             except:
                 pass
             return None
@@ -663,29 +665,16 @@ class CrosshairApp:
         
         def get_key_name(key):
             try:
-                # Сначала проверяем vk код — он не зависит от модификаторов
                 if hasattr(key, 'vk') and key.vk:
                     vk = key.vk
-                    # Буквы A-Z
-                    if 65 <= vk <= 90:
-                        return chr(vk).lower()
-                    # Цифры 0-9
-                    if 48 <= vk <= 57:
-                        return chr(vk)
-                    # F1-F12
-                    if 112 <= vk <= 123:
-                        return f'f{vk - 111}'
-                    # Минус (VK_OEM_MINUS = 189)
-                    if vk == 189:
-                        return '-'
-                    # Плюс/Равно (VK_OEM_PLUS = 187)
-                    if vk == 187:
-                        return '='
-                
-                # Fallback на char
+                    if 65 <= vk <= 90: return chr(vk).lower()
+                    if 48 <= vk <= 57: return chr(vk)
+                    if 112 <= vk <= 123: return f'f{vk - 111}'
+                    if vk == 189: return '-'
+                    if vk == 187: return '='
+                    if vk in (220, 226): return '\\'
                 if hasattr(key, 'char') and key.char:
                     return key.char.lower()
-                # Специальные клавиши
                 if hasattr(key, 'name') and key.name:
                     return key.name.lower()
             except:

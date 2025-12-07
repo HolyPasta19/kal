@@ -1,28 +1,30 @@
 {
   "hotkeys": {
     "toggle": "ctrl+1",
-    "magnifier": "-"
+    "magnifier": "\\"
   },
   "crosshair": {
     "type": "dot",
     "r": 0,
     "g": 255,
-    "b": 0,
+    "b": 253,
     "alpha": 255.0,
-    "size": 24.9,
-    "thickness": 3.21,
-    "gap": 20.0,
-    "dot_size": 4.12
+    "size": 14.75,
+    "thickness": 4.75,
+    "gap": 12.06,
+    "dot_size": 2.1
   },
   "magnifier": {
-    "capture_size": 300,
-    "display_size": 600,
-    "target_fps": 70,
+    "capture_size": 400,
+    "display_size": 1000,
+    "target_fps": 61,
     "interpolation": "nearest",
     "offset_x": 0,
     "offset_y": 0,
     "border_color": "#00ff00",
     "border_width": 2,
-    "zoom": 2.0
+    "zoom": 2.5,
+    "change_sensitivity": true,
+    "sensitivity_coef": 1.0
   }
 }

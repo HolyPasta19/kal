@@ -68,19 +68,9 @@ class CaptureThread(QtCore.QThread):
             except IndexError:
                 mon = sct.monitors[1]
             
-            # Учитываем смещение монитора (для мультимониторных конфигураций)
-            mon_left = mon['left']
-            mon_top = mon['top']
-            screen_width = mon['width']
-            screen_height = mon['height']
+            mon_left, mon_top = mon['left'], mon['top']
+            screen_width, screen_height = mon['width'], mon['height']
             
-            # Центр монитора — для чётных размеров экрана это между пикселями
-            # Захватываем так чтобы центр экрана был точно в центре захваченной области
-            half = self.capture_size // 2
-            
-            # left = center - half, но center = width/2
-            # Для width=2560, center=1280, half=100: left=1180, right=1380 (200 px)
-            # Центр захвата = 1180 + 100 = 1280 ✓
             capture_left = mon_left + (screen_width - self.capture_size) // 2
             capture_top = mon_top + (screen_height - self.capture_size) // 2
 
@@ -90,15 +80,6 @@ class CaptureThread(QtCore.QThread):
                 'width': self.capture_size,
                 'height': self.capture_size
             }
-            
-            # Отладка в файл (дописываем)
-            with open('magnifier_debug.txt', 'a') as f:
-                f.write("\n--- CaptureThread ---\n")
-                f.write(f"Monitor: {mon_left},{mon_top} {screen_width}x{screen_height}\n")
-                f.write(f"Capture size: {self.capture_size}\n")
-                f.write(f"Capture region: {capture_region}\n")
-                f.write(f"Capture center: {capture_left + self.capture_size//2}, {capture_top + self.capture_size//2}\n")
-                f.write(f"Screen center: {mon_left + screen_width//2}, {mon_top + screen_height//2}\n")
             
             interp = self.INTERPOLATION_MODES.get(self.interpolation, cv2.INTER_LINEAR)
             
@@ -171,40 +152,27 @@ class MagnifierWindow(QtWidgets.QLabel):
         self.offset_x = mag_config.get('offset_x', 0)
         self.offset_y = mag_config.get('offset_y', 0)
         
-        # Настройки окна
         self.setWindowFlags(
             QtCore.Qt.FramelessWindowHint |
             QtCore.Qt.WindowStaysOnTopHint |
             QtCore.Qt.Tool |
-            QtCore.Qt.WindowTransparentForInput  # Click-through на уровне Qt
+            QtCore.Qt.WindowTransparentForInput
         )
         self.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents, True)
         self.setFixedSize(self.display_size, self.display_size)
         self.setAlignment(QtCore.Qt.AlignCenter)
-        
-        # Без рамки, чёрный фон
         self.setStyleSheet("background-color: black;")
         
-        # Поток захвата
         self.capture_thread = CaptureThread(config)
         self.capture_thread.frame_ready.connect(self.on_frame)
         
-        # Позиционирование
         self._position_window()
-        
         self.hide()
-        
-        # Click-through применим после первого показа
         self._click_through_applied = False
 
     def _position_window(self):
-        """Позиционирует окно относительно центра экрана (синхронизировано с mss)."""
+        """Позиционирует окно по центру экрана."""
         import mss
-        
-        # Очищаем debug файл
-        with open('magnifier_debug.txt', 'w') as f:
-            f.write("--- Window Position ---\n")
-        
         with mss.mss() as sct:
             mag_config = self.config.get('magnifier', {})
             monitor_index = mag_config.get('monitor_index', 1)
@@ -213,109 +181,56 @@ class MagnifierWindow(QtWidgets.QLabel):
             except IndexError:
                 mon = sct.monitors[1]
             
-            # Позиционируем окно так чтобы его центр был ровно в центре экрана
             screen_center_x = mon['left'] + mon['width'] // 2
             screen_center_y = mon['top'] + mon['height'] // 2
             x = screen_center_x - self.display_size // 2 + self.offset_x
             y = screen_center_y - self.display_size // 2 + self.offset_y
             
-            # Используем setGeometry для точного позиционирования
             self.setGeometry(x, y, self.display_size, self.display_size)
-            
-            # Отладка
-            with open('magnifier_debug.txt', 'a') as f:
-                f.write(f"Monitor: {mon['left']},{mon['top']} {mon['width']}x{mon['height']}\n")
-                f.write(f"Window display_size: {self.display_size}\n")
-                f.write(f"Window target position: {x}, {y}\n")
-                f.write(f"Window target center: {x + self.display_size//2}, {y + self.display_size//2}\n")
-                # Реальная позиция после setGeometry
-                geom = self.geometry()
-                f.write(f"Window actual geometry: {geom.x()}, {geom.y()}, {geom.width()}x{geom.height()}\n")
-                f.write(f"Window actual center: {geom.x() + geom.width()//2}, {geom.y() + geom.height()//2}\n")
 
     def _set_click_through(self):
-        """Делает окно прозрачным для кликов и исключает из захвата экрана (Windows)."""
-        print("[MagnifierWindow] _set_click_through called")
+        """Делает окно прозрачным для кликов и исключает из захвата экрана."""
         if sys.platform == 'win32':
-            import ctypes
-            
-            # Сохраняем hwnd для повторного применения
             self._hwnd = int(self.effectiveWinId())
             self._apply_click_through_style()
             self._exclude_from_capture()
-            
-            # Повторно применяем через 500мс (Qt может перезаписать)
             QtCore.QTimer.singleShot(500, self._apply_click_through_style)
     
     def _exclude_from_capture(self):
-        """Исключает окно из захвата экрана через SetWindowDisplayAffinity."""
+        """Исключает окно из захвата экрана."""
         if not hasattr(self, '_hwnd'):
             return
         
-        import ctypes
-        hwnd = self._hwnd
-        
-        # WDA_EXCLUDEFROMCAPTURE = 0x00000011 (Windows 10 2004+)
-        # WDA_MONITOR = 0x00000001 (fallback для старых версий)
         WDA_EXCLUDEFROMCAPTURE = 0x00000011
         WDA_MONITOR = 0x00000001
         
-        # Пробуем сначала WDA_EXCLUDEFROMCAPTURE
-        result = ctypes.windll.user32.SetWindowDisplayAffinity(hwnd, WDA_EXCLUDEFROMCAPTURE)
-        print(f"[exclude_from_capture] SetWindowDisplayAffinity(WDA_EXCLUDEFROMCAPTURE) result={result}")
-        
+        result = ctypes.windll.user32.SetWindowDisplayAffinity(self._hwnd, WDA_EXCLUDEFROMCAPTURE)
         if not result:
-            # Fallback на WDA_MONITOR
-            result = ctypes.windll.user32.SetWindowDisplayAffinity(hwnd, WDA_MONITOR)
-            print(f"[exclude_from_capture] SetWindowDisplayAffinity(WDA_MONITOR) result={result}")
+            ctypes.windll.user32.SetWindowDisplayAffinity(self._hwnd, WDA_MONITOR)
     
     def _apply_click_through_style(self):
         """Применяет WS_EX_TRANSPARENT стиль."""
         if not hasattr(self, '_hwnd'):
             return
-            
-        import ctypes
-        hwnd = self._hwnd
         
         GWL_EXSTYLE = -20
         WS_EX_LAYERED = 0x00080000
         WS_EX_TRANSPARENT = 0x00000020
-        LWA_ALPHA = 0x02
         
-        # Читаем текущий стиль
-        style = ctypes.windll.user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
-        print(f"[click_through] hwnd={hwnd}, current style={hex(style)}")
-        
-        # Если WS_EX_TRANSPARENT уже есть — ничего не делаем
+        style = ctypes.windll.user32.GetWindowLongW(self._hwnd, GWL_EXSTYLE)
         if style & WS_EX_TRANSPARENT:
-            print("[click_through] WS_EX_TRANSPARENT already set")
             return
         
-        # Добавляем флаги
         new_style = style | WS_EX_LAYERED | WS_EX_TRANSPARENT
-        ctypes.windll.user32.SetWindowLongW(hwnd, GWL_EXSTYLE, new_style)
+        ctypes.windll.user32.SetWindowLongW(self._hwnd, GWL_EXSTYLE, new_style)
+        ctypes.windll.user32.SetLayeredWindowAttributes(self._hwnd, 0, 255, 0x02)
         
-        # Устанавливаем непрозрачность
-        ctypes.windll.user32.SetLayeredWindowAttributes(hwnd, 0, 255, LWA_ALPHA)
-        
-        # Обновляем окно
-        SWP_FRAMECHANGED = 0x0020
-        SWP_NOMOVE = 0x0002
-        SWP_NOSIZE = 0x0001
-        SWP_NOZORDER = 0x0004
-        ctypes.windll.user32.SetWindowPos(hwnd, 0, 0, 0, 0, 0, 
-            SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER)
-        
-        # Проверяем
-        check = ctypes.windll.user32.GetWindowLongW(hwnd, GWL_EXSTYLE)
-        print(f"[click_through] after apply: style={hex(check)}, has_transparent={bool(check & WS_EX_TRANSPARENT)}")
+        ctypes.windll.user32.SetWindowPos(self._hwnd, 0, 0, 0, 0, 0, 0x0020 | 0x0002 | 0x0001 | 0x0004)
 
     def on_frame(self, qimg: QtGui.QImage):
         """Обновляет изображение."""
         if not qimg.isNull():
-            pix = QtGui.QPixmap.fromImage(qimg)
-            # Изображение уже нужного размера после cv2.resize, просто ставим
-            self.setPixmap(pix)
+            self.setPixmap(QtGui.QPixmap.fromImage(qimg))
 
     @QtCore.pyqtSlot()
     def toggle(self):
