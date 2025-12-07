@@ -58,8 +58,7 @@ class CrosshairOverlay:
                     "color": "lime",
                     "size": 15,
                     "thickness": 2,
-                    "gap": 5,
-                    "custom_image": "src/custom_crosshair.png"
+                    "gap": 5
                 }
             }
     
@@ -103,8 +102,7 @@ class CrosshairOverlay:
             self.draw_dot(center, size, color)
         elif crosshair_type == 'circle':
             self.draw_circle(center, size, thickness, color)
-        elif crosshair_type == 'custom':
-            self.draw_custom_image(center, cfg['custom_image'])
+
     
     def draw_cross(self, center, length, gap, thickness, color):
         # Верхняя линия
@@ -162,20 +160,6 @@ class CrosshairOverlay:
             fill=color, outline=color
         )
     
-    def draw_custom_image(self, center, image_path):
-        if not os.path.exists(image_path):
-            print(f"Изображение {image_path} не найдено, используется крест")
-            self.draw_cross(center, 15, 5, 2, 'lime')
-            return
-        
-        try:
-            img = Image.open(image_path)
-            img = img.resize((self.window_size, self.window_size), Image.Resampling.LANCZOS)
-            self.photo = ImageTk.PhotoImage(img)
-            self.canvas.create_image(center, center, image=self.photo)
-        except Exception as e:
-            print(f"Ошибка загрузки изображения: {e}")
-            self.draw_cross(center, 15, 5, 2, 'lime')
     
     def close(self):
         self.root.destroy()
