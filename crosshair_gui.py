@@ -1,13 +1,296 @@
+import sys
+import argparse
+
+parser = argparse.ArgumentParser()
+parser.add_argument('--magnifier-ipc', action='store_true', help='Magnifier IPC mode')
+args, unknown = parser.parse_known_args()
+
+if args.magnifier_ipc:
+    import time
+    import numpy as np
+    import mss
+    import cv2
+    import ctypes
+    import threading
+    import json
+    
+    if sys.platform == 'win32':
+        try:
+            ctypes.windll.shcore.SetProcessDpiAwareness(2)
+        except Exception:
+            try:
+                ctypes.windll.user32.SetProcessDPIAware()
+            except Exception:
+                pass
+    
+    from PyQt5 import QtWidgets, QtCore, QtGui
+    
+    def load_magnifier_config():
+        default_config = {
+            'magnifier': {
+                'capture_size': 150,
+                'display_size': 300,
+                'zoom': 2.0,
+                'target_fps': 60,
+                'interpolation': 'linear',
+                'offset_x': 0,
+                'offset_y': 0,
+                'use_cuda': False,
+                'monitor_index': 1
+            }
+        }
+        try:
+            with open('config.json', 'r', encoding='utf-8') as f:
+                file_config = json.load(f)
+                if 'magnifier' in file_config:
+                    default_config['magnifier'].update(file_config['magnifier'])
+                return default_config
+        except:
+            return default_config
+    
+    class CaptureThread(QtCore.QThread):
+        frame_ready = QtCore.pyqtSignal(QtGui.QImage)
+        
+        INTERPOLATION_MODES = {
+            'nearest': cv2.INTER_NEAREST,
+            'linear': cv2.INTER_LINEAR,
+            'cubic': cv2.INTER_CUBIC,
+            'lanczos': cv2.INTER_LANCZOS4,
+        }
+        
+        def __init__(self, config=None):
+            super().__init__()
+            config = config or {}
+            mag_config = config.get('magnifier', {})
+            
+            self.capture_size = mag_config.get('capture_size', 200)
+            self.display_size = mag_config.get('display_size', 300)
+            self.target_fps = mag_config.get('target_fps', 60)
+            self.interpolation = mag_config.get('interpolation', 'linear')
+            self.monitor_index = mag_config.get('monitor_index', 1)
+            self.use_cuda = mag_config.get('use_cuda', False)
+            
+            self.running = False
+            self.current_fps = self.target_fps
+            self.frame_times = []
+        
+        def run(self):
+            self.running = True
+            
+            cuda_available = False
+            if self.use_cuda:
+                try:
+                    if cv2.cuda.getCudaEnabledDeviceCount() > 0:
+                        cuda_available = True
+                except Exception:
+                    pass
+            
+            with mss.mss() as sct:
+                try:
+                    mon = sct.monitors[self.monitor_index]
+                except IndexError:
+                    mon = sct.monitors[1]
+                
+                mon_left, mon_top = mon['left'], mon['top']
+                screen_width, screen_height = mon['width'], mon['height']
+                
+                capture_left = mon_left + (screen_width - self.capture_size) // 2
+                capture_top = mon_top + (screen_height - self.capture_size) // 2
+                
+                capture_region = {
+                    'left': capture_left,
+                    'top': capture_top,
+                    'width': self.capture_size,
+                    'height': self.capture_size
+                }
+                
+                interp = self.INTERPOLATION_MODES.get(self.interpolation, cv2.INTER_LINEAR)
+                
+                while self.running:
+                    t0 = time.perf_counter()
+                    
+                    screenshot = sct.grab(capture_region)
+                    img = np.array(screenshot)
+                    
+                    if img.shape[2] == 4:
+                        img = img[:, :, :3]
+                    
+                    if cuda_available:
+                        try:
+                            gpu_mat = cv2.cuda_GpuMat()
+                            gpu_mat.upload(img)
+                            resized = cv2.cuda.resize(gpu_mat, (self.display_size, self.display_size), interpolation=interp)
+                            zoomed = resized.download()
+                        except Exception:
+                            zoomed = cv2.resize(img, (self.display_size, self.display_size), interpolation=interp)
+                    else:
+                        zoomed = cv2.resize(img, (self.display_size, self.display_size), interpolation=interp)
+                    
+                    rgb = cv2.cvtColor(zoomed, cv2.COLOR_BGR2RGB)
+                    h, w, ch = rgb.shape
+                    bytes_per_line = ch * w
+                    
+                    qimg = QtGui.QImage(rgb.data, w, h, bytes_per_line, QtGui.QImage.Format_RGB888).copy()
+                    self.frame_ready.emit(qimg)
+                    
+                    elapsed = time.perf_counter() - t0
+                    target_time = 1.0 / self.current_fps
+                    if elapsed < target_time:
+                        time.sleep(target_time - elapsed)
+                    else:
+                        self._adapt_fps(elapsed)
+        
+        def _adapt_fps(self, frame_time):
+            self.frame_times.append(frame_time)
+            if len(self.frame_times) > 10:
+                self.frame_times.pop(0)
+            
+            avg_time = sum(self.frame_times) / len(self.frame_times)
+            if avg_time > 1.0 / 30:
+                self.current_fps = max(15, self.current_fps - 5)
+            elif avg_time < 1.0 / 50 and self.current_fps < self.target_fps:
+                self.current_fps = min(self.target_fps, self.current_fps + 5)
+        
+        def stop(self):
+            self.running = False
+            self.wait(2000)
+    
+    class MagnifierWindow(QtWidgets.QLabel):
+        def __init__(self, config=None):
+            super().__init__()
+            self.config = config or {}
+            mag_config = self.config.get('magnifier', {})
+            
+            self.display_size = mag_config.get('display_size', 300)
+            self.offset_x = mag_config.get('offset_x', 0)
+            self.offset_y = mag_config.get('offset_y', 0)
+            
+            self.setWindowFlags(
+                QtCore.Qt.FramelessWindowHint |
+                QtCore.Qt.WindowStaysOnTopHint |
+                QtCore.Qt.Tool |
+                QtCore.Qt.WindowTransparentForInput
+            )
+            self.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents, True)
+            self.setFixedSize(self.display_size, self.display_size)
+            self.setAlignment(QtCore.Qt.AlignCenter)
+            self.setStyleSheet("background-color: black;")
+            
+            self.capture_thread = CaptureThread(config)
+            self.capture_thread.frame_ready.connect(self.on_frame)
+            
+            self._position_window()
+            self.hide()
+            self._click_through_applied = False
+        
+        def _position_window(self):
+            import mss
+            with mss.mss() as sct:
+                mag_config = self.config.get('magnifier', {})
+                monitor_index = mag_config.get('monitor_index', 1)
+                try:
+                    mon = sct.monitors[monitor_index]
+                except IndexError:
+                    mon = sct.monitors[1]
+                
+                screen_center_x = mon['left'] + mon['width'] // 2
+                screen_center_y = mon['top'] + mon['height'] // 2
+                x = screen_center_x - self.display_size // 2 + self.offset_x
+                y = screen_center_y - self.display_size // 2 + self.offset_y
+                
+                self.setGeometry(x, y, self.display_size, self.display_size)
+        
+        def _set_click_through(self):
+            if sys.platform == 'win32':
+                self._hwnd = int(self.effectiveWinId())
+                self._apply_click_through_style()
+                self._exclude_from_capture()
+                QtCore.QTimer.singleShot(500, self._apply_click_through_style)
+        
+        def _exclude_from_capture(self):
+            if not hasattr(self, '_hwnd'):
+                return
+            
+            WDA_EXCLUDEFROMCAPTURE = 0x00000011
+            WDA_MONITOR = 0x00000001
+            
+            result = ctypes.windll.user32.SetWindowDisplayAffinity(self._hwnd, WDA_EXCLUDEFROMCAPTURE)
+            if not result:
+                ctypes.windll.user32.SetWindowDisplayAffinity(self._hwnd, WDA_MONITOR)
+        
+        def _apply_click_through_style(self):
+            if not hasattr(self, '_hwnd'):
+                return
+            
+            GWL_EXSTYLE = -20
+            WS_EX_LAYERED = 0x00080000
+            WS_EX_TRANSPARENT = 0x00000020
+            
+            style = ctypes.windll.user32.GetWindowLongW(self._hwnd, GWL_EXSTYLE)
+            if style & WS_EX_TRANSPARENT:
+                return
+            
+            new_style = style | WS_EX_LAYERED | WS_EX_TRANSPARENT
+            ctypes.windll.user32.SetWindowLongW(self._hwnd, GWL_EXSTYLE, new_style)
+            ctypes.windll.user32.SetLayeredWindowAttributes(self._hwnd, 0, 255, 0x02)
+            ctypes.windll.user32.SetWindowPos(self._hwnd, 0, 0, 0, 0, 0, 0x0020 | 0x0002 | 0x0001 | 0x0004)
+        
+        def on_frame(self, qimg: QtGui.QImage):
+            if not qimg.isNull():
+                self.setPixmap(QtGui.QPixmap.fromImage(qimg))
+        
+        @QtCore.pyqtSlot()
+        def show_magnifier(self):
+            if not self.isVisible():
+                if not self.capture_thread.isRunning():
+                    self.capture_thread.start()
+                self.show()
+                self.raise_()
+                if not self._click_through_applied:
+                    QtCore.QTimer.singleShot(100, self._set_click_through)
+                    self._click_through_applied = True
+        
+        @QtCore.pyqtSlot()
+        def hide_magnifier(self):
+            if self.isVisible():
+                self.capture_thread.stop()
+                self.hide()
+        
+        def close(self):
+            self.capture_thread.stop()
+            super().close()
+    
+    config = load_magnifier_config()
+    app = QtWidgets.QApplication(sys.argv)
+    magnifier = MagnifierWindow(config)
+    
+    def ipc_reader():
+        while True:
+            try:
+                line = sys.stdin.readline().strip()
+                if line == 'show':
+                    QtCore.QMetaObject.invokeMethod(magnifier, 'show_magnifier', QtCore.Qt.QueuedConnection)
+                elif line == 'hide':
+                    QtCore.QMetaObject.invokeMethod(magnifier, 'hide_magnifier', QtCore.Qt.QueuedConnection)
+                elif line == 'quit' or not line:
+                    app.quit()
+                    break
+            except:
+                break
+    
+    ipc_thread = threading.Thread(target=ipc_reader, daemon=True)
+    ipc_thread.start()
+    
+    sys.exit(app.exec_())
+
 import tkinter as tk
 from tkinter import ttk
 import json
 import os
 from PIL import Image, ImageTk, ImageDraw
-from pynput import keyboard
+from pynput import keyboard, mouse
 import threading
 import ctypes
-
-# Лупа запускается как отдельный процесс
 
 
 class CrosshairApp:
@@ -17,35 +300,34 @@ class CrosshairApp:
         self.magnifier_process = None
         self.magnifier_visible = False
         self.listener = None
+        self.mouse_listener = None
         
-        # Главное окно настроек
         self.root = tk.Tk()
         self.root.title("Crosshair Settings")
         self.root.geometry("650x500")
         self.root.resizable(True, True)
         self.root.minsize(550, 450)
+        try:
+            self.root.iconbitmap('Sprite-0001.ico')
+        except:
+            pass
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
         
-        # Создаем вкладки
         self.notebook = ttk.Notebook(self.root)
         self.notebook.pack(fill='both', expand=True, padx=10, pady=10)
         
-        # Вкладка прицела
         self.crosshair_tab = ttk.Frame(self.notebook)
         self.notebook.add(self.crosshair_tab, text="Прицел")
         self.create_crosshair_tab()
         
-        # Вкладка лупы
         self.magnifier_tab = ttk.Frame(self.notebook)
         self.notebook.add(self.magnifier_tab, text="Лупа")
         self.create_magnifier_tab()
         
-        # Вкладка хоткеев
         self.hotkey_tab = ttk.Frame(self.notebook)
         self.notebook.add(self.hotkey_tab, text="Хоткеи")
         self.create_hotkey_tab()
         
-        # Запускаем оверлей (лупа запускается по кнопке или хоткею)
         self.start_overlay()
         self.setup_hotkeys()
 
@@ -79,7 +361,6 @@ class CrosshairApp:
         frame = ttk.Frame(main_container)
         frame.pack(side='left', fill='both', expand=True)
         
-        # RGB слайдеры
         ttk.Label(frame, text="Цвет (RGB):").grid(row=0, column=0, sticky='w', pady=5)
         
         self.r_var = tk.DoubleVar(value=self.config['crosshair']['r'])
@@ -104,7 +385,6 @@ class CrosshairApp:
         self.b_label = ttk.Label(frame, text=str(int(self.b_var.get())))
         self.b_label.grid(row=3, column=2)
         
-        # Прозрачность
         ttk.Label(frame, text="Прозрачность:").grid(row=4, column=0, sticky='w', pady=(10,0))
         self.alpha_var = tk.DoubleVar(value=self.config['crosshair']['alpha'])
         ttk.Scale(frame, from_=0, to=255, variable=self.alpha_var,
@@ -112,7 +392,6 @@ class CrosshairApp:
         self.alpha_label = ttk.Label(frame, text=f"{self.alpha_var.get():.2f}")
         self.alpha_label.grid(row=4, column=2, pady=(10,0))
         
-        # Ширина
         self.width_label_widget = ttk.Label(frame, text="Ширина:")
         self.width_label_widget.grid(row=5, column=0, sticky='w', pady=(10,0))
         self.thickness_var = tk.DoubleVar(value=self.config['crosshair']['thickness'])
@@ -122,7 +401,6 @@ class CrosshairApp:
         self.thickness_label = ttk.Label(frame, text=f"{self.thickness_var.get():.2f}")
         self.thickness_label.grid(row=5, column=2, pady=(10,0))
         
-        # Длина
         self.length_label_widget = ttk.Label(frame, text="Длина:")
         self.length_label_widget.grid(row=6, column=0, sticky='w')
         self.size_var = tk.DoubleVar(value=self.config['crosshair']['size'])
@@ -132,7 +410,6 @@ class CrosshairApp:
         self.size_label = ttk.Label(frame, text=f"{self.size_var.get():.2f}")
         self.size_label.grid(row=6, column=2)
         
-        # Отступ
         self.gap_label_widget = ttk.Label(frame, text="Отступ:")
         self.gap_label_widget.grid(row=7, column=0, sticky='w')
         self.gap_var = tk.DoubleVar(value=self.config['crosshair']['gap'])
@@ -142,7 +419,6 @@ class CrosshairApp:
         self.gap_label = ttk.Label(frame, text=f"{self.gap_var.get():.2f}")
         self.gap_label.grid(row=7, column=2)
         
-        # Размер точки
         self.dot_size_label_widget = ttk.Label(frame, text="Размер точки:")
         self.dot_size_label_widget.grid(row=8, column=0, sticky='w')
         self.dot_size_var = tk.DoubleVar(value=self.config['crosshair'].get('dot_size', 2))
@@ -154,7 +430,6 @@ class CrosshairApp:
         
         frame.columnconfigure(1, weight=1)
         
-        # Правая часть - семплы прицелов
         samples_frame = ttk.LabelFrame(main_container, text="Типы прицелов", padding=10)
         samples_frame.pack(side='right', fill='y', padx=(10,0))
         
@@ -196,7 +471,6 @@ class CrosshairApp:
         self.record_btn = ttk.Button(hotkey_frame, text="Записать", command=self.record_hotkey)
         self.record_btn.pack(side='left')
         
-        # Хоткей лупы
         ttk.Label(frame, text="Хоткей для включения/выключения лупы:").pack(anchor='w', pady=(15,5))
         
         magnifier_hotkey_frame = ttk.Frame(frame)
@@ -220,10 +494,8 @@ class CrosshairApp:
         frame = ttk.Frame(self.magnifier_tab, padding=20)
         frame.pack(fill='both', expand=True)
         
-        # Получаем текущие настройки лупы
         mag_config = self.config.get('magnifier', {})
         
-        # Размер окна лупы
         ttk.Label(frame, text="Размер окна лупы (px):").grid(row=0, column=0, sticky='w', pady=5)
         self.display_size_var = tk.IntVar(value=mag_config.get('display_size', 300))
         ttk.Scale(frame, from_=100, to=1000, variable=self.display_size_var,
@@ -231,7 +503,6 @@ class CrosshairApp:
         self.display_size_label = ttk.Label(frame, text=str(self.display_size_var.get()))
         self.display_size_label.grid(row=0, column=2)
         
-        # Кратность приближения
         ttk.Label(frame, text="Кратность приближения:").grid(row=1, column=0, sticky='w', pady=5)
         self.zoom_var = tk.DoubleVar(value=mag_config.get('zoom', 2.0))
         ttk.Scale(frame, from_=1.0, to=8.0, variable=self.zoom_var,
@@ -239,7 +510,6 @@ class CrosshairApp:
         self.zoom_label = ttk.Label(frame, text=f"{self.zoom_var.get():.1f}x")
         self.zoom_label.grid(row=1, column=2)
         
-        # FPS
         ttk.Label(frame, text="FPS:").grid(row=2, column=0, sticky='w', pady=5)
         self.fps_var = tk.IntVar(value=mag_config.get('target_fps', 60))
         ttk.Scale(frame, from_=15, to=120, variable=self.fps_var,
@@ -249,14 +519,12 @@ class CrosshairApp:
         
         frame.columnconfigure(1, weight=1)
         
-        # Статус лупы
         status_frame = ttk.LabelFrame(frame, text="Статус", padding=10)
         status_frame.grid(row=3, column=0, columnspan=3, sticky='ew', pady=(20,0))
         
         self.magnifier_status_var = tk.StringVar(value="Не запущена")
         ttk.Label(status_frame, textvariable=self.magnifier_status_var).pack(anchor='w')
         
-        # Информация
         info_frame = ttk.LabelFrame(frame, text="Информация", padding=10)
         info_frame.grid(row=4, column=0, columnspan=3, sticky='ew', pady=(10,0))
         
@@ -270,7 +538,6 @@ class CrosshairApp:
     
     def on_magnifier_change(self):
         """Обработчик изменения настроек лупы."""
-        # Обновляем лейблы
         display_size = int(self.display_size_var.get())
         zoom = round(self.zoom_var.get(), 1)
         fps = int(self.fps_var.get())
@@ -279,10 +546,8 @@ class CrosshairApp:
         self.zoom_label.config(text=f"{zoom:.1f}x")
         self.fps_label.config(text=str(fps))
         
-        # Вычисляем capture_size из zoom
         capture_size = int(display_size / zoom)
         
-        # Обновляем конфиг
         if 'magnifier' not in self.config:
             self.config['magnifier'] = {}
         
@@ -293,7 +558,6 @@ class CrosshairApp:
         
         self.save_config()
         
-        # Debounce перезапуска — ждём 500мс после последнего изменения
         if self.magnifier_process:
             if hasattr(self, '_magnifier_restart_timer') and self._magnifier_restart_timer:
                 self.root.after_cancel(self._magnifier_restart_timer)
@@ -314,12 +578,19 @@ class CrosshairApp:
         if self.recording_magnifier:
             return
         
+        if self.listener:
+            self.listener.stop()
+        if self.mouse_listener:
+            self.mouse_listener.stop()
+        
         self.recording_magnifier = True
         self.magnifier_record_btn.config(state='disabled')
-        self.magnifier_hotkey_var.set("Нажмите клавишу...")
+        self.magnifier_hotkey_var.set("Нажмите клавишу или кнопку мыши...")
         
         pressed_keys = set()
         main_key = [None]
+        temp_mouse_listener = [None]
+        temp_keyboard_listener = [None]
         
         def get_key_name(key):
             try:
@@ -339,12 +610,41 @@ class CrosshairApp:
                 pass
             return None
         
+        def save_hotkey():
+            hotkey_parts = []
+            if 'ctrl' in pressed_keys:
+                hotkey_parts.append('ctrl')
+            if 'alt' in pressed_keys:
+                hotkey_parts.append('alt')
+            if main_key[0]:
+                hotkey_parts.append(main_key[0])
+            
+            if hotkey_parts:
+                if temp_keyboard_listener[0]:
+                    temp_keyboard_listener[0].stop()
+                if temp_mouse_listener[0]:
+                    temp_mouse_listener[0].stop()
+                
+                hotkey_str = '+'.join(hotkey_parts)
+                self.magnifier_hotkey_var.set(hotkey_str)
+                self.config['hotkeys']['magnifier'] = hotkey_str
+                self.save_config()
+                self.setup_hotkeys()
+                self.stop_magnifier_recording()
+                return True
+            return False
+        
         def on_press(key):
             if not self.recording_magnifier:
                 return False
             try:
                 if hasattr(key, 'name') and key.name == 'esc':
+                    if temp_keyboard_listener[0]:
+                        temp_keyboard_listener[0].stop()
+                    if temp_mouse_listener[0]:
+                        temp_mouse_listener[0].stop()
                     self.magnifier_hotkey_var.set(self.config['hotkeys'].get('magnifier', 'f1'))
+                    self.setup_hotkeys()
                     self.stop_magnifier_recording()
                     return False
                 
@@ -366,30 +666,15 @@ class CrosshairApp:
                 is_ctrl = key == keyboard.Key.ctrl_l or key == keyboard.Key.ctrl_r
                 is_alt = key == keyboard.Key.alt_l or key == keyboard.Key.alt_r
                 
-                hotkey_parts = []
-                if 'ctrl' in pressed_keys:
-                    hotkey_parts.append('ctrl')
-                if 'alt' in pressed_keys:
-                    hotkey_parts.append('alt')
-                if main_key[0]:
-                    hotkey_parts.append(main_key[0])
-                
                 should_save = False
                 if not is_ctrl and not is_alt and main_key[0]:
                     should_save = True
                 elif (is_ctrl or is_alt) and not main_key[0]:
                     should_save = True
                 
-                if should_save and hotkey_parts:
-                    hotkey_str = '+'.join(hotkey_parts)
-                    self.magnifier_hotkey_var.set(hotkey_str)
-                    self.config['hotkeys']['magnifier'] = hotkey_str
-                    self.save_config()
-                    if self.listener:
-                        self.listener.stop()
-                    self.setup_hotkeys()
-                    self.stop_magnifier_recording()
-                    return False
+                if should_save:
+                    if save_hotkey():
+                        return False
                 
                 if is_ctrl:
                     pressed_keys.discard('ctrl')
@@ -398,8 +683,45 @@ class CrosshairApp:
             except:
                 pass
         
-        mag_listener = keyboard.Listener(on_press=on_press, on_release=on_release)
-        mag_listener.start()
+        def on_click(x, y, button, pressed):
+            if not self.recording_magnifier or not pressed:
+                return
+            try:
+                if button == mouse.Button.left:
+                    main_key[0] = 'mouse1'
+                elif button == mouse.Button.right:
+                    main_key[0] = 'mouse2'
+                elif button == mouse.Button.middle:
+                    main_key[0] = 'mouse3'
+                elif hasattr(button, 'value') and button.value == 8:
+                    main_key[0] = 'mouse4'
+                elif hasattr(button, 'value') and button.value == 9:
+                    main_key[0] = 'mouse5'
+                
+                if save_hotkey():
+                    return False
+            except:
+                pass
+        
+        def on_scroll(x, y, dx, dy):
+            if not self.recording_magnifier:
+                return
+            try:
+                if dy > 0:
+                    main_key[0] = 'scroll_up'
+                elif dy < 0:
+                    main_key[0] = 'scroll_down'
+                
+                if save_hotkey():
+                    return False
+            except:
+                pass
+        
+        temp_keyboard_listener[0] = keyboard.Listener(on_press=on_press, on_release=on_release)
+        temp_keyboard_listener[0].start()
+        
+        temp_mouse_listener[0] = mouse.Listener(on_click=on_click, on_scroll=on_scroll)
+        temp_mouse_listener[0].start()
     
     def stop_magnifier_recording(self):
         """Останавливает запись хоткея лупы."""
@@ -471,7 +793,6 @@ class CrosshairApp:
         g = int(self.g_var.get())
         b = int(self.b_var.get())
         
-        # Обновляем лейблы
         self.r_label.config(text=str(r))
         self.g_label.config(text=str(g))
         self.b_label.config(text=str(b))
@@ -560,12 +881,19 @@ class CrosshairApp:
         if self.recording:
             return
         
+        if self.listener:
+            self.listener.stop()
+        if self.mouse_listener:
+            self.mouse_listener.stop()
+        
         self.recording = True
         self.record_btn.config(state='disabled')
-        self.hotkey_var.set("Нажмите клавишу...")
+        self.hotkey_var.set("Нажмите клавишу или кнопку мыши...")
         
         pressed_keys = set()
         main_key = [None]
+        temp_mouse_listener_obj = [None]
+        temp_keyboard_listener_obj = [None]
         
         def get_key_name(key):
             try:
@@ -585,12 +913,41 @@ class CrosshairApp:
                 pass
             return None
         
+        def save_hotkey():
+            hotkey_parts = []
+            if 'ctrl' in pressed_keys:
+                hotkey_parts.append('ctrl')
+            if 'alt' in pressed_keys:
+                hotkey_parts.append('alt')
+            if main_key[0]:
+                hotkey_parts.append(main_key[0])
+            
+            if hotkey_parts:
+                if temp_keyboard_listener_obj[0]:
+                    temp_keyboard_listener_obj[0].stop()
+                if temp_mouse_listener_obj[0]:
+                    temp_mouse_listener_obj[0].stop()
+                
+                hotkey_str = '+'.join(hotkey_parts)
+                self.hotkey_var.set(hotkey_str)
+                self.config['hotkeys']['toggle'] = hotkey_str
+                self.save_config()
+                self.setup_hotkeys()
+                self.stop_recording()
+                return True
+            return False
+        
         def on_press(key):
             if not self.recording:
                 return False
             try:
                 if hasattr(key, 'name') and key.name == 'esc':
+                    if temp_keyboard_listener_obj[0]:
+                        temp_keyboard_listener_obj[0].stop()
+                    if temp_mouse_listener_obj[0]:
+                        temp_mouse_listener_obj[0].stop()
                     self.hotkey_var.set(self.config['hotkeys']['toggle'])
+                    self.setup_hotkeys()
                     self.stop_recording()
                     return False
                 
@@ -612,30 +969,15 @@ class CrosshairApp:
                 is_ctrl = key == keyboard.Key.ctrl_l or key == keyboard.Key.ctrl_r
                 is_alt = key == keyboard.Key.alt_l or key == keyboard.Key.alt_r
                 
-                hotkey_parts = []
-                if 'ctrl' in pressed_keys:
-                    hotkey_parts.append('ctrl')
-                if 'alt' in pressed_keys:
-                    hotkey_parts.append('alt')
-                if main_key[0]:
-                    hotkey_parts.append(main_key[0])
-                
                 should_save = False
                 if not is_ctrl and not is_alt and main_key[0]:
                     should_save = True
                 elif (is_ctrl or is_alt) and not main_key[0]:
                     should_save = True
                 
-                if should_save and hotkey_parts:
-                    hotkey_str = '+'.join(hotkey_parts)
-                    self.hotkey_var.set(hotkey_str)
-                    self.config['hotkeys']['toggle'] = hotkey_str
-                    self.save_config()
-                    if self.listener:
-                        self.listener.stop()
-                    self.setup_hotkeys()
-                    self.stop_recording()
-                    return False
+                if should_save:
+                    if save_hotkey():
+                        return False
                 
                 if is_ctrl:
                     pressed_keys.discard('ctrl')
@@ -644,8 +986,45 @@ class CrosshairApp:
             except:
                 pass
         
-        self.hotkey_listener = keyboard.Listener(on_press=on_press, on_release=on_release)
-        self.hotkey_listener.start()
+        def on_click(x, y, button, pressed):
+            if not self.recording or not pressed:
+                return
+            try:
+                if button == mouse.Button.left:
+                    main_key[0] = 'mouse1'
+                elif button == mouse.Button.right:
+                    main_key[0] = 'mouse2'
+                elif button == mouse.Button.middle:
+                    main_key[0] = 'mouse3'
+                elif hasattr(button, 'value') and button.value == 8:
+                    main_key[0] = 'mouse4'
+                elif hasattr(button, 'value') and button.value == 9:
+                    main_key[0] = 'mouse5'
+                
+                if save_hotkey():
+                    return False
+            except:
+                pass
+        
+        def on_scroll(x, y, dx, dy):
+            if not self.recording:
+                return
+            try:
+                if dy > 0:
+                    main_key[0] = 'scroll_up'
+                elif dy < 0:
+                    main_key[0] = 'scroll_down'
+                
+                if save_hotkey():
+                    return False
+            except:
+                pass
+        
+        temp_keyboard_listener_obj[0] = keyboard.Listener(on_press=on_press, on_release=on_release)
+        temp_keyboard_listener_obj[0].start()
+        
+        temp_mouse_listener_obj[0] = mouse.Listener(on_click=on_click, on_scroll=on_scroll)
+        temp_mouse_listener_obj[0].start()
 
     def stop_recording(self):
         self.recording = False
@@ -682,7 +1061,6 @@ class CrosshairApp:
             return None
         
         def check_hotkey(key_name, hotkey_parts):
-            """Проверяет, соответствует ли нажатие хоткею."""
             required_modifiers = set()
             main_key = None
             for part in hotkey_parts:
@@ -691,8 +1069,6 @@ class CrosshairApp:
                 else:
                     main_key = part
             
-            # Если хоткей без модификаторов — срабатывает независимо от зажатых ctrl/alt/shift
-            # Если хоткей с модификаторами — проверяем что они зажаты
             if not required_modifiers:
                 return main_key == key_name
             else:
@@ -707,10 +1083,8 @@ class CrosshairApp:
                 
                 key_name = get_key_name(key)
                 if key_name:
-                    # Проверяем хоткей прицела
                     if check_hotkey(key_name, toggle_parts):
                         self.toggle_overlay()
-                    # Проверяем хоткей лупы
                     elif check_hotkey(key_name, magnifier_parts):
                         self.toggle_magnifier()
             except:
@@ -725,8 +1099,49 @@ class CrosshairApp:
             except:
                 pass
         
+        def on_click(x, y, button, pressed):
+            if not pressed:
+                return
+            try:
+                mouse_name = None
+                if button == mouse.Button.left:
+                    mouse_name = 'mouse1'
+                elif button == mouse.Button.right:
+                    mouse_name = 'mouse2'
+                elif button == mouse.Button.middle:
+                    mouse_name = 'mouse3'
+                elif hasattr(button, 'value') and button.value == 8:
+                    mouse_name = 'mouse4'
+                elif hasattr(button, 'value') and button.value == 9:
+                    mouse_name = 'mouse5'
+                
+                if mouse_name:
+                    if check_hotkey(mouse_name, toggle_parts):
+                        self.toggle_overlay()
+                    elif check_hotkey(mouse_name, magnifier_parts):
+                        self.toggle_magnifier()
+            except:
+                pass
+        
+        def on_scroll(x, y, dx, dy):
+            try:
+                scroll_name = 'scroll_up' if dy > 0 else 'scroll_down'
+                if check_hotkey(scroll_name, toggle_parts):
+                    self.toggle_overlay()
+                elif check_hotkey(scroll_name, magnifier_parts):
+                    self.toggle_magnifier()
+            except:
+                pass
+        
+        if self.listener:
+            self.listener.stop()
         self.listener = keyboard.Listener(on_press=on_press, on_release=on_release)
         self.listener.start()
+        
+        if hasattr(self, 'mouse_listener') and self.mouse_listener:
+            self.mouse_listener.stop()
+        self.mouse_listener = mouse.Listener(on_click=on_click, on_scroll=on_scroll)
+        self.mouse_listener.start()
 
     def start_overlay(self):
         self.overlay = CrosshairOverlay(self.config)
@@ -738,9 +1153,9 @@ class CrosshairApp:
         self.magnifier_visible = False
         try:
             self.magnifier_process = subprocess.Popen(
-                ['python', 'magnifier.py', '--ipc'],
+                [sys.executable, __file__, '--magnifier-ipc'],
                 stdin=subprocess.PIPE,
-                creationflags=subprocess.CREATE_NO_WINDOW
+                creationflags=subprocess.CREATE_NO_WINDOW if sys.platform == 'win32' else 0
             )
             self._update_magnifier_ui()
         except Exception as e:
@@ -807,6 +1222,8 @@ class CrosshairApp:
     def on_closing(self):
         if self.listener:
             self.listener.stop()
+        if hasattr(self, 'mouse_listener') and self.mouse_listener:
+            self.mouse_listener.stop()
         if self.overlay:
             self.overlay.close()
         self.stop_magnifier()
@@ -828,7 +1245,6 @@ class CrosshairOverlay:
         self.root = tk.Tk()
         self.root.overrideredirect(True)
         self.root.attributes('-topmost', True)
-        # Используем magenta как прозрачный цвет (чтобы чёрный прицел работал)
         self.transparent_color = '#ff00ff'
         self.root.attributes('-transparentcolor', self.transparent_color)
         
