@@ -1,7 +1,19 @@
+"""
+Kal - Crosshair Overlay & Magnifier
+Настраиваемый прицел и лупа для игр
+
+Режимы работы:
+- GUI режим (по умолчанию): python crosshair_gui.py
+- Magnifier IPC режим: python crosshair_gui.py --magnifier-ipc
+
+Автор: sugoma
+Лицензия: MIT
+"""
+
 import sys
 import argparse
 
-parser = argparse.ArgumentParser()
+parser = argparse.ArgumentParser(description='Kal - Crosshair Overlay & Magnifier')
 parser.add_argument('--magnifier-ipc', action='store_true', help='Magnifier IPC mode')
 args, unknown = parser.parse_known_args()
 
@@ -303,14 +315,24 @@ class CrosshairApp:
         self.mouse_listener = None
         
         self.root = tk.Tk()
-        self.root.title("Crosshair Settings")
+        self.root.title("Kal")
         self.root.geometry("650x500")
         self.root.resizable(True, True)
         self.root.minsize(550, 450)
-        try:
-            self.root.iconbitmap('Sprite-0001.ico')
-        except:
-            pass
+        
+        self.setup_dark_theme()
+        
+        if sys.platform == 'win32':
+            try:
+                if getattr(sys, 'frozen', False):
+                    base_path = sys._MEIPASS
+                else:
+                    base_path = os.path.dirname(os.path.abspath(__file__))
+                icon_path = os.path.join(base_path, 'Sprite-0001.ico')
+                if os.path.exists(icon_path):
+                    self.root.iconbitmap(icon_path)
+            except Exception as e:
+                print(f"Icon load error: {e}")
         self.root.protocol("WM_DELETE_WINDOW", self.on_closing)
         
         self.notebook = ttk.Notebook(self.root)
@@ -330,6 +352,39 @@ class CrosshairApp:
         
         self.start_overlay()
         self.setup_hotkeys()
+
+    def setup_dark_theme(self):
+        bg_color = '#2b2b2b'
+        fg_color = '#ffffff'
+        select_bg = '#404040'
+        button_bg = '#3c3c3c'
+        
+        self.root.configure(bg=bg_color)
+        
+        style = ttk.Style()
+        style.theme_use('clam')
+        
+        style.configure('TNotebook', background=bg_color, borderwidth=0)
+        style.configure('TNotebook.Tab', background=button_bg, foreground=fg_color, 
+                       padding=[10, 5], borderwidth=0)
+        style.map('TNotebook.Tab', background=[('selected', select_bg)], 
+                 foreground=[('selected', fg_color)])
+        
+        style.configure('TFrame', background=bg_color)
+        style.configure('TLabel', background=bg_color, foreground=fg_color)
+        style.configure('TLabelframe', background=bg_color, foreground=fg_color, borderwidth=1)
+        style.configure('TLabelframe.Label', background=bg_color, foreground=fg_color)
+        
+        style.configure('TButton', background=button_bg, foreground=fg_color, 
+                       borderwidth=1, focuscolor='none')
+        style.map('TButton', background=[('active', select_bg), ('pressed', select_bg)])
+        
+        style.configure('TScale', background=bg_color, troughcolor=button_bg, 
+                       borderwidth=0, lightcolor=select_bg, darkcolor=select_bg)
+        
+        style.configure('TEntry', fieldbackground=button_bg, foreground=fg_color, 
+                       borderwidth=1, insertcolor=fg_color)
+        style.map('TEntry', fieldbackground=[('readonly', button_bg)])
 
     def load_config(self):
         try:
@@ -445,8 +500,8 @@ class CrosshairApp:
             row, col = i // 2, i % 2
             btn_frame = ttk.Frame(samples_frame)
             btn_frame.grid(row=row, column=col, padx=5, pady=5)
-            preview = tk.Canvas(btn_frame, width=60, height=60, bg='white',
-                              highlightthickness=2, highlightbackground='gray', cursor='hand2')
+            preview = tk.Canvas(btn_frame, width=60, height=60, bg='#3c3c3c',
+                              highlightthickness=2, highlightbackground='#555555', cursor='hand2')
             preview.pack()
             self.preview_canvases.append((preview, value))
             self.draw_preview(preview, value)
@@ -731,7 +786,7 @@ class CrosshairApp:
     def draw_preview(self, canvas, crosshair_type):
         cx, cy = 30, 30
         size, thickness, gap = 12, 2, 4
-        color = 'black'
+        color = '#ffffff'
         
         if crosshair_type == 'dot':
             canvas.create_oval(cx - size//2, cy - size//2, cx + size//2, cy + size//2, fill=color, outline=color)
@@ -1024,7 +1079,7 @@ class CrosshairApp:
         temp_keyboard_listener_obj[0].start()
         
         temp_mouse_listener_obj[0] = mouse.Listener(on_click=on_click, on_scroll=on_scroll)
-        temp_mouse_listener_obj[0].start()
+        temp_mouse_listener_obj[0].star
 
     def stop_recording(self):
         self.recording = False
@@ -1313,6 +1368,30 @@ class CrosshairOverlay:
             self.root.attributes('-alpha', alpha)
             self.visible = True
 
+    def draw_circle_bresenham(self, cx, cy, radius, color, thickness=1, filled=False):
+        """Рисует идеально ровный круг."""
+        if filled:
+            r_sq = (radius + 0.5) * (radius + 0.5)
+            for dy in range(-radius, radius + 1):
+                for dx in range(-radius, radius + 1):
+                    dist_sq = (dx + 0.5) * (dx + 0.5) + (dy + 0.5) * (dy + 0.5)
+                    if dist_sq <= r_sq:
+                        self.canvas.create_rectangle(cx + dx, cy + dy, cx + dx + 1, cy + dy + 1, 
+                                                    fill=color, outline=color, width=0)
+        else:
+            outer_r = radius + thickness / 2.0
+            inner_r = max(0, radius - thickness / 2.0)
+            outer_r_sq = (outer_r + 0.5) * (outer_r + 0.5)
+            inner_r_sq = (inner_r - 0.5) * (inner_r - 0.5)
+            
+            scan_range = int(outer_r) + 1
+            for dy in range(-scan_range, scan_range + 1):
+                for dx in range(-scan_range, scan_range + 1):
+                    dist_sq = (dx + 0.5) * (dx + 0.5) + (dy + 0.5) * (dy + 0.5)
+                    if inner_r_sq < dist_sq < outer_r_sq:
+                        self.canvas.create_rectangle(cx + dx, cy + dy, cx + dx + 1, cy + dy + 1, 
+                                                    fill=color, outline=color, width=0)
+
     def draw_crosshair(self):
         if not self.canvas:
             return
@@ -1335,30 +1414,20 @@ class CrosshairOverlay:
         dot_size = round(cfg.get('dot_size', 2), 1)
         
         if crosshair_type == 'dot':
-            self.canvas.create_oval(center - dot_size, center - dot_size,
-                                   center + dot_size, center + dot_size,
-                                   fill=color, outline=color)
+            self.draw_circle_bresenham(center, center, int(dot_size), color, 1, filled=True)
         elif crosshair_type == 'circle':
-            radius = max(thickness, size)
-            self.canvas.create_oval(center - radius, center - radius,
-                                   center + radius, center + radius,
-                                   outline=color, width=thickness)
+            radius = int(max(thickness, size))
+            self.draw_circle_bresenham(center, center, radius, color, int(thickness), filled=False)
         elif crosshair_type == 'circle_dot':
-            radius = max(thickness, size)
-            self.canvas.create_oval(center - radius, center - radius,
-                                   center + radius, center + radius,
-                                   outline=color, width=thickness)
-            self.canvas.create_oval(center - dot_size, center - dot_size,
-                                   center + dot_size, center + dot_size,
-                                   fill=color, outline=color)
+            radius = int(max(thickness, size))
+            self.draw_circle_bresenham(center, center, radius, color, int(thickness), filled=False)
+            self.draw_circle_bresenham(center, center, int(dot_size), color, 1, filled=True)
         elif crosshair_type == 'cross':
             self.canvas.create_line(center, center - gap - size, center, center - gap, fill=color, width=thickness)
             self.canvas.create_line(center, center + gap, center, center + gap + size, fill=color, width=thickness)
             self.canvas.create_line(center - gap - size, center, center - gap, center, fill=color, width=thickness)
             self.canvas.create_line(center + gap, center, center + gap + size, center, fill=color, width=thickness)
-            self.canvas.create_oval(center - dot_size, center - dot_size,
-                                   center + dot_size, center + dot_size,
-                                   fill=color, outline=color)
+            self.draw_circle_bresenham(center, center, int(dot_size), color, 1, filled=True)
         elif crosshair_type == 'chevron':
             self.canvas.create_line(center - size, center + size, center, center, fill=color, width=thickness)
             self.canvas.create_line(center, center, center + size, center + size, fill=color, width=thickness)

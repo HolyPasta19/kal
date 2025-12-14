@@ -1,0 +1,8 @@
+/.vscode
+/__pycache__
+/build
+/dist
+kal.code-workspace
+/gitkal
+*.spec
+config.json
