@@ -48,9 +48,11 @@ if args.magnifier_ipc:
                 'offset_x': 0,
                 'offset_y': 0,
                 'use_cuda': False,
-                'monitor_index': 1
+                'monitor_index': 1,
+                'stretch_x': 1.0,  
+                'stretch_y': 1.0   
             }
-        }
+    }
         try:
             with open('config.json', 'r', encoding='utf-8') as f:
                 file_config = json.load(f)
@@ -75,12 +77,18 @@ if args.magnifier_ipc:
             config = config or {}
             mag_config = config.get('magnifier', {})
             
-            self.capture_size = mag_config.get('capture_size', 200)
-            self.display_size = mag_config.get('display_size', 300)
+            self.capture_size = mag_config.get('capture_size', 200)  # Квадратный размер захвата
+            self.display_size = mag_config.get('display_size', 300)   # Базовый размер отображения
             self.target_fps = mag_config.get('target_fps', 60)
             self.interpolation = mag_config.get('interpolation', 'linear')
             self.monitor_index = mag_config.get('monitor_index', 1)
             self.use_cuda = mag_config.get('use_cuda', False)
+            self.stretch_x = mag_config.get('stretch_x', 1.0)  # ← Растяжение по X
+            self.stretch_y = mag_config.get('stretch_y', 1.0)  # ← Растяжение по Y
+            
+            # Размеры окна отображения (растянутые)
+            self.display_width = int(self.display_size * self.stretch_x)
+            self.display_height = int(self.display_size * self.stretch_y)
             
             self.running = False
             self.current_fps = self.target_fps
@@ -88,7 +96,7 @@ if args.magnifier_ipc:
         
         def run(self):
             self.running = True
-            
+    
             cuda_available = False
             if self.use_cuda:
                 try:
@@ -106,14 +114,15 @@ if args.magnifier_ipc:
                 mon_left, mon_top = mon['left'], mon['top']
                 screen_width, screen_height = mon['width'], mon['height']
                 
+                # Захват квадрата
                 capture_left = mon_left + (screen_width - self.capture_size) // 2
                 capture_top = mon_top + (screen_height - self.capture_size) // 2
                 
                 capture_region = {
                     'left': capture_left,
                     'top': capture_top,
-                    'width': self.capture_size,
-                    'height': self.capture_size
+                    'width': self.capture_size,  # КВАДРАТ
+                    'height': self.capture_size   # КВАДРАТ
                 }
                 
                 interp = self.INTERPOLATION_MODES.get(self.interpolation, cv2.INTER_LINEAR)
@@ -127,16 +136,21 @@ if args.magnifier_ipc:
                     if img.shape[2] == 4:
                         img = img[:, :, :3]
                     
+                    # Растягиваем квадратное изображение до прямоугольного размера
+                    target_width = self.display_width
+                    target_height = self.display_height
+                    
                     if cuda_available:
                         try:
                             gpu_mat = cv2.cuda_GpuMat()
                             gpu_mat.upload(img)
-                            resized = cv2.cuda.resize(gpu_mat, (self.display_size, self.display_size), interpolation=interp)
+                            # Растягиваем квадрат в прямоугольник
+                            resized = cv2.cuda.resize(gpu_mat, (target_width, target_height), interpolation=interp)
                             zoomed = resized.download()
                         except Exception:
-                            zoomed = cv2.resize(img, (self.display_size, self.display_size), interpolation=interp)
+                            zoomed = cv2.resize(img, (target_width, target_height), interpolation=interp)
                     else:
-                        zoomed = cv2.resize(img, (self.display_size, self.display_size), interpolation=interp)
+                        zoomed = cv2.resize(img, (target_width, target_height), interpolation=interp)
                     
                     rgb = cv2.cvtColor(zoomed, cv2.COLOR_BGR2RGB)
                     h, w, ch = rgb.shape
@@ -173,9 +187,15 @@ if args.magnifier_ipc:
             self.config = config or {}
             mag_config = self.config.get('magnifier', {})
             
-            self.display_size = mag_config.get('display_size', 300)
+            self.display_size = mag_config.get('display_size', 300)  # Базовый размер
+            self.stretch_x = mag_config.get('stretch_x', 1.0)        # Растяжение X
+            self.stretch_y = mag_config.get('stretch_y', 1.0)        # Растяжение Y
             self.offset_x = mag_config.get('offset_x', 0)
             self.offset_y = mag_config.get('offset_y', 0)
+            
+            # Растянутые размеры окна
+            self.window_width = int(self.display_size * self.stretch_x)
+            self.window_height = int(self.display_size * self.stretch_y)
             
             self.setWindowFlags(
                 QtCore.Qt.FramelessWindowHint |
@@ -184,7 +204,7 @@ if args.magnifier_ipc:
                 QtCore.Qt.WindowTransparentForInput
             )
             self.setAttribute(QtCore.Qt.WA_TransparentForMouseEvents, True)
-            self.setFixedSize(self.display_size, self.display_size)
+            self.setFixedSize(self.window_width, self.window_height)  # Растянутый размер
             self.setAlignment(QtCore.Qt.AlignCenter)
             self.setStyleSheet("background-color: black;")
             
@@ -207,10 +227,12 @@ if args.magnifier_ipc:
                 
                 screen_center_x = mon['left'] + mon['width'] // 2
                 screen_center_y = mon['top'] + mon['height'] // 2
-                x = screen_center_x - self.display_size // 2 + self.offset_x
-                y = screen_center_y - self.display_size // 2 + self.offset_y
                 
-                self.setGeometry(x, y, self.display_size, self.display_size)
+                # Центрируем с учетом растянутых размеров окна
+                x = screen_center_x - self.window_width // 2 + self.offset_x
+                y = screen_center_y - self.window_height // 2 + self.offset_y
+                
+                self.setGeometry(x, y, self.window_width, self.window_height)
         
         def _set_click_through(self):
             if sys.platform == 'win32':
@@ -554,40 +576,61 @@ class CrosshairApp:
         ttk.Label(frame, text="Размер окна лупы (px):").grid(row=0, column=0, sticky='w', pady=5)
         self.display_size_var = tk.IntVar(value=mag_config.get('display_size', 300))
         ttk.Scale(frame, from_=100, to=1000, variable=self.display_size_var,
-                 command=lambda v: self.on_magnifier_change()).grid(row=0, column=1, sticky='ew', padx=5)
+                command=lambda v: self.on_magnifier_change()).grid(row=0, column=1, sticky='ew', padx=5)
         self.display_size_label = ttk.Label(frame, text=str(self.display_size_var.get()))
         self.display_size_label.grid(row=0, column=2)
         
         ttk.Label(frame, text="Кратность приближения:").grid(row=1, column=0, sticky='w', pady=5)
         self.zoom_var = tk.DoubleVar(value=mag_config.get('zoom', 2.0))
         ttk.Scale(frame, from_=1.0, to=8.0, variable=self.zoom_var,
-                 command=lambda v: self.on_magnifier_change()).grid(row=1, column=1, sticky='ew', padx=5)
+                command=lambda v: self.on_magnifier_change()).grid(row=1, column=1, sticky='ew', padx=5)
         self.zoom_label = ttk.Label(frame, text=f"{self.zoom_var.get():.1f}x")
         self.zoom_label.grid(row=1, column=2)
         
         ttk.Label(frame, text="FPS:").grid(row=2, column=0, sticky='w', pady=5)
         self.fps_var = tk.IntVar(value=mag_config.get('target_fps', 60))
         ttk.Scale(frame, from_=15, to=120, variable=self.fps_var,
-                 command=lambda v: self.on_magnifier_change()).grid(row=2, column=1, sticky='ew', padx=5)
+                command=lambda v: self.on_magnifier_change()).grid(row=2, column=1, sticky='ew', padx=5)
         self.fps_label = ttk.Label(frame, text=str(self.fps_var.get()))
         self.fps_label.grid(row=2, column=2)
         
+        # ДОБАВЛЯЕМ ПОЛЗУНКИ РАСТЯЖЕНИЯ ЗДЕСЬ:
+        ttk.Label(frame, text="Растяжение по X:").grid(row=3, column=0, sticky='w', pady=5)
+        self.stretch_x_var = tk.DoubleVar(value=mag_config.get('stretch_x', 1.0))
+        ttk.Scale(frame, from_=1.0, to=5.0, variable=self.stretch_x_var,
+                command=lambda v: self.on_magnifier_change()).grid(row=3, column=1, sticky='ew', padx=5)
+        self.stretch_x_label = ttk.Label(frame, text=f"{self.stretch_x_var.get():.1f}x")
+        self.stretch_x_label.grid(row=3, column=2)
+        
+        ttk.Label(frame, text="Растяжение по Y:").grid(row=4, column=0, sticky='w', pady=5)
+        self.stretch_y_var = tk.DoubleVar(value=mag_config.get('stretch_y', 1.0))
+        ttk.Scale(frame, from_=1.0, to=5.0, variable=self.stretch_y_var,
+                command=lambda v: self.on_magnifier_change()).grid(row=4, column=1, sticky='ew', padx=5)
+        self.stretch_y_label = ttk.Label(frame, text=f"{self.stretch_y_var.get():.1f}x")
+        self.stretch_y_label.grid(row=4, column=2)
+        
         frame.columnconfigure(1, weight=1)
         
+        # ОБНОВЛЯЕМ ROW ДЛЯ status_frame и info_frame:
         status_frame = ttk.LabelFrame(frame, text="Статус", padding=10)
-        status_frame.grid(row=3, column=0, columnspan=3, sticky='ew', pady=(20,0))
+        status_frame.grid(row=5, column=0, columnspan=3, sticky='ew', pady=(20,0))  # row=5 вместо 3
         
         self.magnifier_status_var = tk.StringVar(value="Не запущена")
         ttk.Label(status_frame, textvariable=self.magnifier_status_var).pack(anchor='w')
         
         info_frame = ttk.LabelFrame(frame, text="Информация", padding=10)
-        info_frame.grid(row=4, column=0, columnspan=3, sticky='ew', pady=(10,0))
+        info_frame.grid(row=6, column=0, columnspan=3, sticky='ew', pady=(10,0))  # row=6 вместо 4
         
+        # ОБНОВЛЯЕМ ИНФО ТЕКСТ:
         info_text = """Лупа захватывает область экрана вокруг центра и отображает увеличенное изображение.
 
-• Размер области захвата = Размер окна / Кратность
-• Большая кратность = сильнее приближение
-• Используйте хоткей для включения/выключения"""
+    • Размер области захвата = Размер окна / Кратность
+    • Растяжение: множитель для оси X/Y (1.0 = квадрат)
+    • Большая кратность = сильнее приближение
+    • FPS - это значение fps самой лупы, оно не связано с частотой кадров вашего приложения. 
+    Не желательно выставлять большие значения, тк это может сказаться на производительности
+    • Используйте хоткей для включения/выключения
+    """
         
         ttk.Label(info_frame, text=info_text, justify='left').pack(anchor='w')
     
@@ -597,9 +640,19 @@ class CrosshairApp:
         zoom = round(self.zoom_var.get(), 1)
         fps = int(self.fps_var.get())
         
+        # Добавляем получение значений растяжения
+        stretch_x = round(self.stretch_x_var.get(), 1) if hasattr(self, 'stretch_x_var') else 1.0
+        stretch_y = round(self.stretch_y_var.get(), 1) if hasattr(self, 'stretch_y_var') else 1.0
+        
         self.display_size_label.config(text=str(display_size))
         self.zoom_label.config(text=f"{zoom:.1f}x")
         self.fps_label.config(text=str(fps))
+        
+        # Обновляем метки растяжения если они существуют
+        if hasattr(self, 'stretch_x_label'):
+            self.stretch_x_label.config(text=f"{stretch_x:.1f}x")
+        if hasattr(self, 'stretch_y_label'):
+            self.stretch_y_label.config(text=f"{stretch_y:.1f}x")
         
         capture_size = int(display_size / zoom)
         
@@ -611,13 +664,17 @@ class CrosshairApp:
         self.config['magnifier']['zoom'] = zoom
         self.config['magnifier']['target_fps'] = fps
         
+        # Сохраняем значения растяжения
+        self.config['magnifier']['stretch_x'] = stretch_x
+        self.config['magnifier']['stretch_y'] = stretch_y
+        
         self.save_config()
         
         if self.magnifier_process:
             if hasattr(self, '_magnifier_restart_timer') and self._magnifier_restart_timer:
                 self.root.after_cancel(self._magnifier_restart_timer)
             self._magnifier_restart_timer = self.root.after(500, self._restart_magnifier_debounced)
-    
+        
     def _restart_magnifier_debounced(self):
         """Перезапускает лупу после debounce."""
         self._magnifier_restart_timer = None
@@ -1302,6 +1359,8 @@ class CrosshairOverlay:
         self.root.attributes('-topmost', True)
         self.transparent_color = '#ff00ff'
         self.root.attributes('-transparentcolor', self.transparent_color)
+        self.root.attributes('-alpha', 0.0)  # ← Добавить эту строку
+        self.visible = False  # ← И эту
         
         screen_width = self.root.winfo_screenwidth()
         screen_height = self.root.winfo_screenheight()
@@ -1318,6 +1377,7 @@ class CrosshairOverlay:
         self.set_click_through()
         self.draw_crosshair()
         self.root.mainloop()
+        
     
     def _force_topmost(self):
         """Принудительно устанавливает окно поверх всех через WinAPI."""
